@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  pg_database:
+    image: postgres:15
+    container_name: geostat_postgres
+    environment:
+      POSTGRES_USER: etl_user
+      POSTGRES_PASSWORD: etl_password
+      POSTGRES_DB: geostat_db
+    ports:
+      - "5434:5432"
