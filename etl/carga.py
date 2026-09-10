@@ -3,25 +3,33 @@ from psycopg2.extras import execute_values
 import datetime
 
 def cargar_postgresql(df_final, df_cuarentena, total_leidos):
-    print("5. Cargando en PostgreSQL con Upsert y purgado de cuarentena...")
+    print("5. Cargando en PostgreSQL con Upsert e histórico de cuarentena...")
+    
     inicio = datetime.datetime.now()
     
-    # Conexión local fija
     conexion = psycopg2.connect(host="localhost", port="5434", user="etl_user", password="etl_password", database="geostat_db")
     cursor = conexion.cursor()
     
-    # Vaciamos la tabla de cuarentena
-    cursor.execute("TRUNCATE TABLE tb_cuarentena_geodatos RESTART IDENTITY;")
+    # --- LA MAGIA ESTÁ AQUÍ ---
+    # Buscamos el último ID de la tabla y le sumamos 1. Si la tabla está vacía, devuelve 1.
+    cursor.execute("SELECT COALESCE(MAX(id_ejecucion), 0) + 1 FROM tb_ejecuciones_etl")
+    id_lote = cursor.fetchone()[0]
     
     if not df_cuarentena.empty:
-        # Limpiamos los espacios y ponemos la primera en mayúscula solo para agrupar
         df_cuarentena['dato_original'] = df_cuarentena['pais_nombre_local'].str.strip().str.title()
-        
-        # Eliminamos las filas duplicadas
         df_cuarentena = df_cuarentena.drop_duplicates(subset=['dato_original', 'motivo_rechazo'])
         
-        cuarentena_tuplas = [tuple(x) for x in df_cuarentena[['dato_original', 'motivo_rechazo']].to_numpy()]
-        execute_values(cursor, "INSERT INTO tb_cuarentena_geodatos (dato_original, motivo_rechazo) VALUES %s", cuarentena_tuplas)
+        # Usamos el id_lote (que ahora es 1, 2, 3...)
+        cuarentena_tuplas = [
+            (row['dato_original'], row['motivo_rechazo'], id_lote) 
+            for _, row in df_cuarentena.iterrows()
+        ]
+        
+        query_cuarentena = """
+            INSERT INTO tb_cuarentena_geodatos (dato_original, motivo_rechazo, id_ejecucion) 
+            VALUES %s
+        """
+        execute_values(cursor, query_cuarentena, cuarentena_tuplas)
         
     if not df_final.empty:
         final_tuplas = [tuple(x) for x in df_final.to_numpy()]
@@ -35,12 +43,13 @@ def cargar_postgresql(df_final, df_cuarentena, total_leidos):
         execute_values(cursor, query_upsert, final_tuplas)
         
     fin = datetime.datetime.now()
+    
+    # Guardamos el resumen con el mismo id_lote numérico
     cursor.execute(
-        "INSERT INTO tb_ejecuciones_etl (inicio, fin, registros_leidos, registros_insertados, errores) VALUES (%s, %s, %s, %s, %s)",
-        (inicio, fin, total_leidos, len(df_final), len(df_cuarentena))
+        "INSERT INTO tb_ejecuciones_etl (id_ejecucion, inicio, fin, registros_leidos, registros_insertados, errores) VALUES (%s, %s, %s, %s, %s, %s)",
+        (id_lote, inicio, fin, total_leidos, len(df_final), len(df_cuarentena))
     )
     
     conexion.commit()
     cursor.close()
     conexion.close()
-    print(f"   -> ¡Carga finalizada con éxito! {len(df_final)} países insertados y cuarentena limpia.")
